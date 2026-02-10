@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.0.2
+// @version      1.1.0
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -184,104 +184,91 @@
 
     // =========================================================================
     // DOM Manipulation
+    //
+    // Actual Mucklet client DOM structure (from live inspection):
+    //
+    //   div.pageroom
+    //     div.namesection            (room name / image)
+    //     div.pageroom--population   (population count)
+    //     div.pageroom--sections
+    //       div.panelsection  (Description)
+    //       div.panelsection  (Commands)
+    //       div.panelsection.pageroom--exits   ← exits section
+    //         div.panelsection--content
+    //           div.pageroom-exit
+    //             div.pageroom-exitchars
+    //               div.pageroom-exitchars--row
+    //                 div.pageroom-exitchars--char   ← tiny avatar only
+    //       div.panelsection.pageroom--chars   ← "In room" section
+    //         div.panelsection--head
+    //           div.panelsection--title
+    //             div.pageroom--inroomheader
+    //               h3 "In room"
+    //         div.panelsection--content
+    //           div > div > div >
+    //             div.pageroom-char              ← top-level char element
+    //               div.pageroom-char--cont
+    //                 div.pageroom-char--badge.badge.btn.margin4
+    //                   div.badge--select
+    //                     div.avatar (avatar img)
+    //                     div.badge--info
+    //                       div.pageroom-char--name.common--level-{active|idle|inactive|asleep}
+    //                         span (first name)
+    //                         span (last name)
+    //                       div.badge--text (gender / species)
+    //                     div.badge--tools
+    //                   div.counter
     // =========================================================================
 
     /**
      * Find the "In room" panel section in the room page.
-     * The Mucklet client renders the room panel with PanelSection components
-     * that have h3 headers.
+     * Uses the exact class: .panelsection.pageroom--chars
      */
     function findInRoomSection() {
-        // Look for h3 elements containing "In room" text
-        const headers = document.querySelectorAll('h3');
-        for (const h3 of headers) {
-            if (h3.textContent.trim().toLowerCase() === 'in room') {
-                // Walk up to find the panel section container
-                let section = h3.closest('.panelsection') ||
-                              h3.closest('[class*="panelsection"]') ||
-                              h3.closest('[class*="panel-section"]');
-
-                // If no class-based match, walk up a few levels
-                if (!section) {
-                    section = h3.parentElement?.parentElement?.parentElement;
-                }
-                return { header: h3, section };
-            }
+        const section = document.querySelector('.panelsection.pageroom--chars');
+        if (!section) {
+            log('Could not find .panelsection.pageroom--chars');
+            return null;
         }
-        return null;
+        const header = section.querySelector('h3');
+        return { header, section };
     }
 
     /**
-     * Find the exits section for filtering transparent exit chars
+     * Find the exits section.
+     * Uses the exact class: .panelsection.pageroom--exits
      */
     function findExitsSection() {
-        const headers = document.querySelectorAll('h3');
-        for (const h3 of headers) {
-            const txt = h3.textContent.trim().toLowerCase();
-            if (txt === 'exits' || txt === 'ways out') {
-                let section = h3.closest('.panelsection') ||
-                              h3.closest('[class*="panelsection"]') ||
-                              h3.closest('[class*="panel-section"]');
-                if (!section) {
-                    section = h3.parentElement?.parentElement?.parentElement;
-                }
-                return { header: h3, section };
-            }
-        }
-        return null;
+        const section = document.querySelector('.panelsection.pageroom--exits');
+        if (!section) return null;
+        const header = section.querySelector('h3');
+        return { header, section };
     }
 
     /**
-     * Get character elements from a section.
-     * Characters are typically rendered as list items or repeated component elements.
+     * Get character elements from the "In room" section.
+     *
+     * IMPORTANT: We select ONLY .pageroom-char elements. The old code used
+     * [class*="char--"] which also matched inner elements like
+     * .pageroom-char--cont, .pageroom-char--badge, .pageroom-char--name,
+     * producing duplicate/broken entries when cloned into the sleepers section.
      */
     function getCharElements(section) {
         if (!section) return [];
-
-        // The Mucklet client renders chars in a collection list
-        // Each char is typically a div with char-specific classes
-        const candidates = section.querySelectorAll(
-            '[class*="pageroomchar"], [class*="pageroom-char"], [class*="char--"], ' +
-            '[class*="collectionlist"] > *, [class*="collection-list"] > *'
-        );
-
-        if (candidates.length > 0) {
-            return Array.from(candidates);
-        }
-
-        // Fallback: Look for the char list container and get direct children
-        // The "In room" section content typically has a wrapper with char items
-        const listContainers = section.querySelectorAll(
-            '[class*="charlist"], [class*="chars"], [class*="collection"]'
-        );
-        for (const container of listContainers) {
-            const items = container.children;
-            if (items.length > 0) {
-                return Array.from(items);
-            }
-        }
-
-        // Last resort: look for any repeated similar elements that look like char entries
-        // (elements with avatars/images inside the section's content area)
-        const contentArea = section.querySelector('[class*="content"], [class*="body"]') || section;
-        const withAvatars = contentArea.querySelectorAll(':scope > * > [class*="avatar"], :scope > * > img');
-        if (withAvatars.length > 0) {
-            return Array.from(withAvatars).map(av => av.parentElement);
-        }
-
-        return [];
+        // .pageroom-char is the top-level wrapper for each character badge row
+        return Array.from(section.querySelectorAll('.pageroom-char'));
     }
 
     /**
-     * Get character elements from exit rooms (transparent exits)
+     * Get character elements from exit rooms (transparent exits).
+     *
+     * NOTE: Exit char elements (.pageroom-exitchars--char) are tiny avatar
+     * thumbnails only — they do NOT carry common--level-* classes, so
+     * isSleeperChar() cannot detect their state from the DOM alone.
+     * To filter them, we cross-reference avatar URLs with identified sleepers.
      */
     function getExitCharElements() {
-        // Exit chars are rendered differently - as small avatar grids
-        // Look for exit room containers with char avatars
-        const exitChars = document.querySelectorAll(
-            '[class*="pageroomexitchar"], [class*="exitchar"], [class*="exit-char"]'
-        );
-        return Array.from(exitChars);
+        return Array.from(document.querySelectorAll('.pageroom-exitchars--char'));
     }
 
     // =========================================================================
@@ -366,10 +353,17 @@
             // Clone sleeper elements into this section
             for (const el of sleeperElements) {
                 const clone = el.cloneNode(true);
+                // Remove msf-hidden-char from the clone AND all descendants
+                // (applyFilter adds it to the top element, but the old buggy
+                // getCharElements used to also match inner elements and add
+                // the class to them — clean up everything to be safe)
                 clone.classList.remove('msf-hidden-char');
-                // Copy event listeners won't transfer with cloneNode,
-                // but clicks on char names should still work via event delegation
-                // if the client uses data attributes for navigation
+                clone.querySelectorAll('.msf-hidden-char').forEach(
+                    child => child.classList.remove('msf-hidden-char'),
+                );
+                // Note: cloneNode does not copy event listeners. Clicks on
+                // cloned character names won't navigate to their profile.
+                // This is a known limitation of the DOM-level approach.
                 list.appendChild(clone);
             }
         }
@@ -406,10 +400,10 @@
             existingSleepersSection.remove();
         }
 
-        // Remove any existing toggle we created
+        // Check if our toggle already exists
         const existingToggle = section.querySelector('.msf-toggle-container');
 
-        // Get all character elements
+        // Get all character elements (only top-level .pageroom-char, not inner elements)
         const charElements = getCharElements(section);
         log(`Found ${charElements.length} character elements`);
 
@@ -422,15 +416,19 @@
         const existingPlaceholder = section.querySelector('.msf-no-awake-placeholder');
         if (existingPlaceholder) existingPlaceholder.remove();
 
-        if (!splitEnabled) {
-            // Not splitting - just make sure toggle exists
-            if (!existingToggle) {
-                // Insert toggle before the "In room" header
-                const headerEl = inRoom.header.closest('[class*="header"]') || inRoom.header.parentElement;
-                if (headerEl && headerEl.parentElement) {
-                    headerEl.parentElement.insertBefore(createToggle(), headerEl);
-                }
+        // Ensure toggle exists — insert inside .panelsection--title, before .pageroom--inroomheader
+        if (!existingToggle) {
+            const titleEl = section.querySelector('.panelsection--title');
+            const inroomHeader = section.querySelector('.pageroom--inroomheader');
+            if (titleEl && inroomHeader) {
+                titleEl.insertBefore(createToggle(), inroomHeader);
             }
+        }
+
+        if (!splitEnabled) {
+            // Unhide any exit chars we previously hid
+            document.querySelectorAll('.pageroom-exitchars--char.msf-hidden-char')
+                .forEach(el => el.classList.remove('msf-hidden-char'));
             return;
         }
 
@@ -460,14 +458,6 @@
             }
         }
 
-        // Ensure toggle exists
-        if (!existingToggle) {
-            const headerEl = inRoom.header.closest('[class*="header"]') || inRoom.header.parentElement;
-            if (headerEl && headerEl.parentElement) {
-                headerEl.parentElement.insertBefore(createToggle(), headerEl);
-            }
-        }
-
         // Create sleepers section after the "In room" section
         const sleepersSection = createSleepersSection(sleepers);
         if (section.nextSibling) {
@@ -476,26 +466,50 @@
             section.parentElement.appendChild(sleepersSection);
         }
 
-        // Also filter exit chars (transparent exits - hide idle level 3)
-        filterExitChars();
+        // Filter exit chars (transparent exits) by cross-referencing avatar URLs
+        filterExitChars(sleepers);
     }
 
     /**
-     * Filter characters in transparent exit displays
-     * The PR also filters out idle level 3 chars from exit room character grids
+     * Filter characters in transparent exit displays.
+     *
+     * Exit char elements (.pageroom-exitchars--char) are tiny avatar-only
+     * thumbnails with NO level-* classes. We can't use isSleeperChar() on them.
+     * Instead, we collect avatar base URLs from known sleepers in the room and
+     * cross-reference against exit char avatar images.
+     *
+     * This catches the case where a sleeper character also appears in a
+     * transparent exit's character grid (same room or adjacent).
      */
-    function filterExitChars() {
-        if (!splitEnabled) {
-            // Unhide all exit chars
-            const hidden = document.querySelectorAll('.msf-hidden-char');
-            hidden.forEach(el => el.classList.remove('msf-hidden-char'));
+    function filterExitChars(sleeperElements) {
+        // Reset all exit char visibility first
+        document.querySelectorAll('.pageroom-exitchars--char.msf-hidden-char')
+            .forEach(el => el.classList.remove('msf-hidden-char'));
+
+        if (!splitEnabled || !sleeperElements || sleeperElements.length === 0) {
             return;
         }
 
+        // Build a set of avatar base URLs from identified sleepers
+        const sleeperAvatarUrls = new Set();
+        for (const el of sleeperElements) {
+            const img = el.querySelector('.avatar img');
+            if (img && img.src) {
+                // Strip query params (?thumb=s vs ?thumb=m) for comparison
+                sleeperAvatarUrls.add(img.src.split('?')[0]);
+            }
+        }
+
+        if (sleeperAvatarUrls.size === 0) return;
+
+        // Match exit char avatars against the sleeper set
         const exitChars = getExitCharElements();
-        for (const el of exitChars) {
-            if (isSleeperChar(el)) {
-                el.classList.add('msf-hidden-char');
+        for (const exitChar of exitChars) {
+            const img = exitChar.querySelector('img');
+            if (!img || !img.src) continue;
+            const baseUrl = img.src.split('?')[0];
+            if (sleeperAvatarUrls.has(baseUrl)) {
+                exitChar.classList.add('msf-hidden-char');
             }
         }
     }
@@ -505,7 +519,14 @@
     // =========================================================================
 
     /**
-     * Set up a MutationObserver to watch for room panel changes
+     * Set up a MutationObserver to watch for room panel changes.
+     *
+     * We observe document.body for childList + subtree changes (the client
+     * re-renders sections when you move rooms), and attribute changes on
+     * 'class' (the level classes change when a character goes idle/asleep).
+     *
+     * We skip mutations caused by our own DOM manipulation (toggle, sleepers
+     * section) to avoid infinite loops.
      */
     function setupObserver() {
         if (observer) {
@@ -513,30 +534,39 @@
         }
 
         observer = new MutationObserver((mutations) => {
-            // Debounce - only reapply if relevant DOM changes occurred
             let shouldReapply = false;
             for (const mutation of mutations) {
-                // Check if the mutation is in a relevant area
                 const target = mutation.target;
-                if (target && (
-                    target.className?.toString().includes('pageroom') ||
-                    target.className?.toString().includes('char') ||
-                    target.className?.toString().includes('collection') ||
-                    target.className?.toString().includes('panel') ||
-                    target.className?.toString().includes('fader') ||
-                    mutation.addedNodes.length > 0
-                )) {
+                if (!target) continue;
+
+                // Skip mutations inside our own injected elements
+                if (target.closest?.('#msf-sleepers-section') ||
+                    target.closest?.('.msf-toggle-container') ||
+                    target.classList?.contains('msf-hidden-char') ||
+                    target.classList?.contains('msf-sleepers-list') ||
+                    target.classList?.contains('msf-sleepers-arrow')) {
+                    continue;
+                }
+
+                const cls = target.className?.toString() || '';
+
+                // React to changes in the room panel, character elements,
+                // panel sections, or the fader transition wrappers
+                if (cls.includes('pageroom') ||
+                    cls.includes('panelsection') ||
+                    cls.includes('common--level') ||
+                    cls.includes('fader') ||
+                    cls.includes('badge') ||
+                    mutation.addedNodes.length > 0 ||
+                    mutation.removedNodes.length > 0) {
                     shouldReapply = true;
                     break;
                 }
             }
 
             if (shouldReapply) {
-                // Use a small delay to batch rapid mutations
                 clearTimeout(setupObserver._timeout);
-                setupObserver._timeout = setTimeout(() => {
-                    applyFilter();
-                }, 200);
+                setupObserver._timeout = setTimeout(applyFilter, 200);
             }
         });
 
@@ -544,53 +574,57 @@
             childList: true,
             subtree: true,
             attributes: true,
-            attributeFilter: ['class', 'data-state', 'data-idle'],
+            attributeFilter: ['class'],
         });
     }
 
     /**
-     * Periodic scan as a safety net for cases the observer misses
+     * Periodic scan as a safety net for cases the observer misses.
+     * Checks whether the room panel has changed (e.g. navigated to a new room)
+     * or whether the toggle was removed by the client re-rendering.
      */
     function startPeriodicScan() {
         setInterval(() => {
             const inRoom = findInRoomSection();
             if (inRoom) {
-                // Check if the room panel has changed (different section element)
+                // Room panel changed (navigated to a different room)
                 if (inRoom.section !== lastRoomPanel) {
                     lastRoomPanel = inRoom.section;
                     applyFilter();
+                    return;
                 }
 
-                // Also check if toggle needs to be re-inserted
-                // (can happen if the client re-renders the section)
-                const hasToggle = inRoom.section.querySelector('.msf-toggle-container') ||
-                                  inRoom.section.previousElementSibling?.classList?.contains('msf-toggle-container');
-                if (!hasToggle) {
+                // Toggle got removed by a client re-render
+                if (!inRoom.section.querySelector('.msf-toggle-container')) {
                     applyFilter();
                 }
+            } else {
+                // Room panel gone (e.g. switched to a different tab)
+                lastRoomPanel = null;
             }
         }, CONFIG.scanInterval);
     }
 
     /**
-     * Wait for the app to load, then initialize
+     * Wait for the app to load, then initialize.
+     *
+     * The Mucklet client renders into a .layoutdesktop (or .layoutmobile)
+     * container inside .screen.viewport. We wait for that to appear.
      */
     function init() {
         log('Initializing Mucklet Sleeper Filter');
 
-        // Wait for the page to have meaningful content
         const waitForApp = setInterval(() => {
-            // Look for signs the Mucklet client has loaded
-            const appRoot = document.querySelector('#app, [class*="main"], [class*="layout"]');
+            // The client is loaded when the layout container exists with content
+            const appRoot = document.querySelector('.layoutdesktop, .layoutmobile, .screen.viewport');
             if (appRoot && appRoot.children.length > 0) {
                 clearInterval(waitForApp);
                 log('App detected, starting filter');
 
-                // Start observing and scanning
                 setupObserver();
                 startPeriodicScan();
 
-                // Initial application
+                // Give the room panel a moment to render before first apply
                 setTimeout(applyFilter, 1000);
             }
         }, 500);
