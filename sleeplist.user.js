@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.1.0
+// @version      1.1.1
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -625,7 +625,7 @@
                 startPeriodicScan();
 
                 // Give the room panel a moment to render before first apply
-                setTimeout(applyFilter, 1000);
+                setTimeout(applyFilter, 500);
             }
         }, 500);
     }
