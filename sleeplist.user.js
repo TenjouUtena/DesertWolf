@@ -6,6 +6,8 @@
 // @author       Kredden
 // @match        https://mucklet.com/*
 // @match        https://*.mucklet.com/*
+// @match        https://*.wolfery.com/*
+// @match        https://wolfery.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
