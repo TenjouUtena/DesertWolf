@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.1.2
+// @version      1.1.3
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -366,9 +366,24 @@
                 clone.querySelectorAll('.msf-hidden-char').forEach(
                     child => child.classList.remove('msf-hidden-char'),
                 );
-                // Note: cloneNode does not copy event listeners. Clicks on
-                // cloned character names won't navigate to their profile.
-                // This is a known limitation of the DOM-level approach.
+                // Forward clicks to the hidden originals (they still have their
+                // addEventListener handlers and closure references to char.id)
+                const cloneBadge = clone.querySelector('.pageroom-char--badge');
+                const origBadge = el.querySelector('.pageroom-char--badge');
+                if (cloneBadge && origBadge) {
+                    cloneBadge.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        origBadge.click();
+                    });
+                }
+                const cloneNote = clone.querySelector('.pageroom-char--note');
+                const origNote = el.querySelector('.pageroom-char--note');
+                if (cloneNote && origNote) {
+                    cloneNote.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        origNote.click();
+                    });
+                }
                 list.appendChild(clone);
             }
         }
@@ -483,7 +498,8 @@
         }
 
         // Filter exit chars (transparent exits) by cross-referencing avatar URLs
-        filterExitChars(sleepers);
+        //filterExitChars(sleepers);
+        // Disabled for now, as it's not working correctly.
 
         // ── Resume observer on next animation frame ──
         // MutationObserver callbacks are delivered as microtasks, which run
