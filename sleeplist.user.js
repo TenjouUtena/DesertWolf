@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.1.4
+// @version      1.1.5
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -26,6 +26,8 @@
         storageKey: 'mucklet_sleeper_split',
         // Persist sleepers section open/closed state
         sleepersOpenKey: 'mucklet_sleepers_open',
+        // persist sleeping/idle status
+        sleepingStatusKey: 'mucklet_sleeping_status',
         // Debug logging
         debug: false,
     };
@@ -529,6 +531,19 @@
                 urls.add(img.src.split('?')[0]);
             }
         }
+
+        if (urls.size === 0) {
+            const raw = GM_getValue(CONFIG.sleepingStatusKey, '[]');
+            try {
+                const storedUrls = JSON.parse(raw);
+                if (Array.isArray(storedUrls)) {
+                    for (const u of storedUrls) urls.add(u);
+                }
+            } catch (_) { /* ignore bad stored data */ }
+        } else {
+            GM_setValue(CONFIG.sleepingStatusKey, JSON.stringify(Array.from(urls)));
+        }
+
         return urls;
     }
 
