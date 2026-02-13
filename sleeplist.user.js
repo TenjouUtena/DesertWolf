@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.1.3
+// @version      1.1.4
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -145,6 +145,10 @@
             display: none !important;
         }
 
+        .msf-hidden-row {
+            display: none !important;
+        }
+
         .msf-no-awake-placeholder,
         .msf-no-sleepers-placeholder {
             padding: 6px 16px;
@@ -178,8 +182,6 @@
             return true;
         }
 
-        // Check descendants – the level class is typically on the char's
-        // name element or a small status-indicator span inside the row
         if (charEl.querySelector('.common--level-asleep, .common--level-inactive')) {
             return true;
         }
@@ -497,51 +499,58 @@
             section.parentElement.appendChild(sleepersSection);
         }
 
-        // Filter exit chars (transparent exits) by cross-referencing avatar URLs
-        //filterExitChars(sleepers);
-        // Disabled for now, as it's not working correctly.
+        // Filter exit chars using inactive/asleep avatars from the Awake panel
+        if (splitEnabled) {
+            filterExitChars();
+        } else {
+            // Unhide any exit chars we previously hid
+            document.querySelectorAll('.pageroom-exitchars--char.msf-hidden-char')
+                .forEach(el => el.classList.remove('msf-hidden-char'));
+        }
 
-        // ── Resume observer on next animation frame ──
-        // MutationObserver callbacks are delivered as microtasks, which run
-        // before requestAnimationFrame. So by the time the rAF callback
-        // fires, all mutation records from our DOM work have already been
-        // delivered (and ignored thanks to suppressObserver === true).
+        // Resume observer on next frame
         requestAnimationFrame(() => { suppressObserver = false; });
+    }
+
+    /**
+     * Collect avatar base URLs for all inactive/asleep characters from the
+     * Awake panel (left side). Those badges use the same level classes
+     * (.common--level-inactive, .common--level-asleep) as the room panel.
+     * We use this set to hide matching tiny avatars in the exit character grids.
+     */
+    function getSleeperAvatarUrlsFromAwakePanel() {
+        const urls = new Set();
+        const awakeChars = document.querySelectorAll('.pageawake-char');
+        for (const el of awakeChars) {
+            const hasInactive = el.querySelector('.common--level-inactive, .common--level-asleep');
+            if (!hasInactive) continue;
+            const img = el.querySelector('.avatar img');
+            if (img && img.src) {
+                urls.add(img.src.split('?')[0]);
+            }
+        }
+        return urls;
     }
 
     /**
      * Filter characters in transparent exit displays.
      *
      * Exit char elements (.pageroom-exitchars--char) are tiny avatar-only
-     * thumbnails with NO level-* classes. We can't use isSleeperChar() on them.
-     * Instead, we collect avatar base URLs from known sleepers in the room and
-     * cross-reference against exit char avatar images.
-     *
-     * This catches the case where a sleeper character also appears in a
-     * transparent exit's character grid (same room or adjacent).
+     * thumbnails with NO level-* classes. We use the Awake panel (left) as
+     * the source of truth: find all .pageawake-char with .common--level-inactive
+     * or .common--level-asleep, collect their avatar URLs, then hide any exit
+     * avatar that matches.
      */
-    function filterExitChars(sleeperElements) {
+    function filterExitChars() {
         // Reset all exit char visibility first
         document.querySelectorAll('.pageroom-exitchars--char.msf-hidden-char')
             .forEach(el => el.classList.remove('msf-hidden-char'));
 
-        if (!splitEnabled || !sleeperElements || sleeperElements.length === 0) {
-            return;
-        }
+        if (!splitEnabled) return;
 
-        // Build a set of avatar base URLs from identified sleepers
-        const sleeperAvatarUrls = new Set();
-        for (const el of sleeperElements) {
-            const img = el.querySelector('.avatar img');
-            if (img && img.src) {
-                // Strip query params (?thumb=s vs ?thumb=m) for comparison
-                sleeperAvatarUrls.add(img.src.split('?')[0]);
-            }
-        }
-
+        const sleeperAvatarUrls = getSleeperAvatarUrlsFromAwakePanel();
         if (sleeperAvatarUrls.size === 0) return;
 
-        // Match exit char avatars against the sleeper set
         const exitChars = getExitCharElements();
         for (const exitChar of exitChars) {
             const img = exitChar.querySelector('img');
@@ -550,6 +559,33 @@
             if (sleeperAvatarUrls.has(baseUrl)) {
                 exitChar.classList.add('msf-hidden-char');
             }
+        }
+
+        // Rebalance rows per exit (each exit has its own .pageroom-exitchars).
+        // Do not move nodes between exits or the app’s component tree breaks.
+        const containers = document.querySelectorAll('.pageroom-exitchars');
+        for (const container of containers) {
+            const unhiddenExitChars = Array.from(
+                container.querySelectorAll('.pageroom-exitchars--char:not(.msf-hidden-char)')
+            );
+            const width = container.offsetWidth || 200;
+            const newPerRow = Math.max(Math.floor((width + 4) / (24 + 4)), 1);
+            const numrows = Math.ceil(unhiddenExitChars.length / newPerRow);
+            const newRows = [];
+            for (let i = 0; i < numrows; i++) {
+                const row = document.createElement('div');
+                row.className = 'pageroom-exitchars--row';
+                for (let j = 0; j < newPerRow; j++) {
+                    const idx = i * newPerRow + j;
+                    if (idx >= unhiddenExitChars.length) break;
+                    const node = unhiddenExitChars[idx];
+                    if (node && node.nodeType === Node.ELEMENT_NODE) {
+                        row.appendChild(node);
+                    }
+                }
+                newRows.push(row);
+            }
+            container.replaceChildren(...newRows);
         }
     }
 
