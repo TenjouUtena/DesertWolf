@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.1.5
+// @version      1.2.0
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -48,6 +48,9 @@
     // sections) fires the observer and schedules another applyFilter(), creating
     // an infinite re-render loop.
     let suppressObserver = false;
+    // Per-container MutationObservers for exit char grids.
+    let exitObservers = new Map();
+    let suppressExitObserver = false;
 
     // =========================================================================
     // Styles
@@ -425,6 +428,10 @@
         // discarded before we start listening for real ones again.
         suppressObserver = true;
 
+        // Disconnect exit observers — filterExitChars() will set up fresh ones
+        for (const [, obs] of exitObservers) obs.disconnect();
+        exitObservers.clear();
+
         const { section } = inRoom;
 
         // Remove any existing sleepers section we created
@@ -462,6 +469,9 @@
             // Unhide any exit chars we previously hid
             document.querySelectorAll('.pageroom-exitchars--char.msf-hidden-char')
                 .forEach(el => el.classList.remove('msf-hidden-char'));
+            // No exit observers needed when filter is off
+            for (const [, obs] of exitObservers) obs.disconnect();
+            exitObservers.clear();
             // Resume observer on next frame
             requestAnimationFrame(() => { suppressObserver = false; });
             return;
@@ -602,6 +612,79 @@
             }
             container.replaceChildren(...newRows);
         }
+
+        // Attach dedicated observers to catch app-driven exit updates
+        setupExitObservers();
+    }
+
+    /**
+     * Set up per-container MutationObservers on each .pageroom-exitchars element.
+     * When the Mucklet client modifies an exit container (e.g. a character
+     * enters or leaves an adjacent room), the observer triggers a targeted
+     * re-filter of just the exit chars — not a full applyFilter().
+     */
+    function setupExitObservers() {
+        for (const [, obs] of exitObservers) obs.disconnect();
+        exitObservers.clear();
+
+        if (!splitEnabled) return;
+
+        const containers = document.querySelectorAll('.pageroom-exitchars');
+        for (const container of containers) {
+            const obs = new MutationObserver((mutations) => {
+                if (suppressExitObserver || suppressObserver) return;
+
+                let hasRelevantChange = false;
+                for (const mutation of mutations) {
+                    if (mutation.type === 'childList' &&
+                        (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
+                        hasRelevantChange = true;
+                        break;
+                    }
+                    if (mutation.type === 'attributes') {
+                        hasRelevantChange = true;
+                        break;
+                    }
+                }
+
+                if (hasRelevantChange) {
+                    clearTimeout(setupExitObservers._debounceTimer);
+                    setupExitObservers._debounceTimer = setTimeout(() => {
+                        log('Exit observer triggered re-filter');
+                        refilterExitsOnly();
+                    }, 150);
+                }
+            });
+
+            obs.observe(container, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class'],
+            });
+
+            exitObservers.set(container, obs);
+        }
+    }
+
+    /**
+     * Lightweight re-filter that only processes exit chars.
+     * Called by exit observers when the Mucklet client modifies exit containers.
+     */
+    function refilterExitsOnly() {
+        if (!splitEnabled) return;
+
+        suppressObserver = true;
+        suppressExitObserver = true;
+
+        try {
+            filterExitChars();
+        } finally {
+            requestAnimationFrame(() => {
+                suppressObserver = false;
+                suppressExitObserver = false;
+            });
+        }
     }
 
     // =========================================================================
@@ -643,6 +726,12 @@
 
                 // Skip mutations inside our own injected elements
                 if (target.closest('#msf-sleepers-section, .msf-toggle-container')) {
+                    continue;
+                }
+
+                // Skip mutations inside exit char containers —
+                // dedicated exit observers handle these
+                if (target.closest('.pageroom-exitchars')) {
                     continue;
                 }
 
@@ -696,6 +785,19 @@
                 // Toggle got removed by a client re-render
                 if (!inRoom.section.querySelector('.msf-toggle-container')) {
                     applyFilter();
+                    return;
+                }
+
+                // Check if exit containers were silently replaced by the client
+                if (splitEnabled) {
+                    const currentContainers = document.querySelectorAll('.pageroom-exitchars');
+                    for (const container of currentContainers) {
+                        if (!exitObservers.has(container)) {
+                            log('Periodic scan: stale exit observers, re-filtering exits');
+                            refilterExitsOnly();
+                            break;
+                        }
+                    }
                 }
             } else {
                 // Room panel gone (e.g. switched to a different tab)
