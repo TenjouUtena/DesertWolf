@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.2.1
+// @version      1.2.2
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -276,8 +276,8 @@
      * isSleeperChar() cannot detect their state from the DOM alone.
      * To filter them, we cross-reference avatar URLs with identified sleepers.
      */
-    function getExitCharElements() {
-        return Array.from(document.querySelectorAll('.pageroom-exitchars--char'));
+    function getExitCharElements(parentElement) {
+        return Array.from(parentElement.querySelectorAll('.pageroom-exitchars--char'));
     }
 
     // =========================================================================
@@ -567,16 +567,30 @@
 
         if (!splitEnabled) return;
 
+
+
         const sleeperAvatarUrls = getSleeperAvatarUrlsFromAwakePanel();
         if (sleeperAvatarUrls.size === 0) return;
 
-        const exitChars = getExitCharElements();
-        for (const exitChar of exitChars) {
-            const img = exitChar.querySelector('img');
-            if (!img || !img.src) continue;
-            const baseUrl = img.src.split('?')[0];
-            if (sleeperAvatarUrls.has(baseUrl)) {
-                exitChar.classList.add('msf-hidden-char');
+        const exits = document.querySelectorAll('.pageroom-exit');
+        for(const exit of exits) {
+            const exitChars = getExitCharElements(exit);
+            const rows = exit.querySelectorAll('.pageroom-exitchars--row');
+            const firstRow = rows[0];
+            if (exitChars.length === 0)
+                continue;
+            for (const exitChar of exitChars) {
+                const img = exitChar.querySelector('img');
+                if (!img || !img.src) continue;
+                const baseUrl = img.src.split('?')[0];
+                if (sleeperAvatarUrls.has(baseUrl)) {
+                    exitChar.classList.add('msf-hidden-char');
+
+                } else {
+                    // try and move up.
+                    exitChar.appendChild(firstRow);
+                }
+
             }
         }
 
