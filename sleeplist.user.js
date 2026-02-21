@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mucklet Sleeper Filter
 // @namespace    https://mucklet.com/
-// @version      1.2.2
+// @version      1.2.3
 // @description  Adds a toggle to split sleepers (asleep & highly idle characters) into a separate collapsible section in the room panel. Based on mucklet-client PR #457.
 // @author       Kredden
 // @match        https://mucklet.com/*
@@ -149,6 +149,20 @@
 
         .msf-hidden-row {
             display: none !important;
+        }
+
+        /* When filtering exits, flatten rows so all visible chars
+           flow in one wrapping grid. display:contents makes row divs
+           invisible to layout without removing them from the DOM,
+           so the client component tree stays intact. */
+        .msf-wrap-mode {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            padding-top: 4px;
+            margin-left: -2px;
+        }
+        .msf-wrap-mode > .pageroom-exitchars--row {
+            display: contents !important;
         }
 
         .msf-no-awake-placeholder,
@@ -459,11 +473,11 @@
         }
 
         if (!splitEnabled) {
-            // Unhide any exit chars and rows we previously hid
+            // Unhide any exit chars and remove wrap mode
             document.querySelectorAll('.pageroom-exitchars--char.msf-hidden-char')
                 .forEach(el => el.classList.remove('msf-hidden-char'));
-            document.querySelectorAll('.pageroom-exitchars--row.msf-hidden-row')
-                .forEach(el => el.classList.remove('msf-hidden-row'));
+            document.querySelectorAll('.pageroom-exitchars.msf-wrap-mode')
+                .forEach(el => el.classList.remove('msf-wrap-mode'));
             // Resume observer on next frame
             requestAnimationFrame(() => { suppressObserver = false; });
             return;
@@ -559,47 +573,42 @@
      * avatar that matches.
      */
     function filterExitChars() {
-        // Reset all exit char and row visibility first
+        // Reset all exit char visibility and wrap mode first
         document.querySelectorAll('.pageroom-exitchars--char.msf-hidden-char')
             .forEach(el => el.classList.remove('msf-hidden-char'));
-        document.querySelectorAll('.pageroom-exitchars--row.msf-hidden-row')
-            .forEach(el => el.classList.remove('msf-hidden-row'));
+        document.querySelectorAll('.pageroom-exitchars.msf-wrap-mode')
+            .forEach(el => el.classList.remove('msf-wrap-mode'));
 
         if (!splitEnabled) return;
-
-
 
         const sleeperAvatarUrls = getSleeperAvatarUrlsFromAwakePanel();
         if (sleeperAvatarUrls.size === 0) return;
 
-        const exits = document.querySelectorAll('.pageroom-exit');
-        for(const exit of exits) {
-            const exitChars = getExitCharElements(exit);
-            const rows = exit.querySelectorAll('.pageroom-exitchars--row');
-            const firstRow = rows[0];
-            if (exitChars.length === 0)
-                continue;
+        // Hide sleeper chars and enable wrap mode per exit container
+        const containers = document.querySelectorAll('.pageroom-exitchars');
+        for (const container of containers) {
+            const exitChars = Array.from(
+                container.querySelectorAll('.pageroom-exitchars--char')
+            );
+            if (exitChars.length === 0) continue;
+
+            let hidCount = 0;
             for (const exitChar of exitChars) {
                 const img = exitChar.querySelector('img');
                 if (!img || !img.src) continue;
                 const baseUrl = img.src.split('?')[0];
                 if (sleeperAvatarUrls.has(baseUrl)) {
                     exitChar.classList.add('msf-hidden-char');
-
-                } else {
-                    // try and move up.
-                    exitChar.appendChild(firstRow);
+                    hidCount++;
                 }
+            }
 
+            // Enable wrap mode so visible chars flow in one grid.
+            // display:contents on rows flattens them without touching the DOM.
+            if (hidCount > 0) {
+                container.classList.add('msf-wrap-mode');
             }
         }
-
-        // Hide rows where ALL chars are hidden (avoids empty padding gaps).
-        // We never modify the DOM structure -- the client component tree owns it.
-        document.querySelectorAll('.pageroom-exitchars--row').forEach(row => {
-            const hasVisible = row.querySelector('.pageroom-exitchars--char:not(.msf-hidden-char)');
-            row.classList.toggle('msf-hidden-row', !hasVisible);
-        });
     }
 
     // =========================================================================
